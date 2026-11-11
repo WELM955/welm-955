@@ -249,8 +249,18 @@ input[type=range]{width:100%;accent-color:var(--gold)}.fine{font-size:.78rem;col
     if("speechSynthesis" in window && "SpeechSynthesisUtterance" in window){
       window.speechSynthesis.cancel();
       const intro = new SpeechSynthesisUtterance(djIntroduction(track));
-      intro.rate = 0.94;
-      intro.pitch = 0.88;
+      const availableVoices = window.speechSynthesis.getVoices();
+      const englishVoices = availableVoices.filter(v => /^en([_-]|$)/i.test(v.lang));
+      // Prefer a clearly male-sounding English voice when the device provides one.
+      const maleVoice = englishVoices.find(v =>
+        /male|man|david|mark|guy|daniel|alex|james|george|fred|tom/i.test(v.name)
+      );
+      const preferredVoice = maleVoice ||
+        englishVoices.find(v => /en-US/i.test(v.lang)) ||
+        englishVoices[0];
+      if (preferredVoice) intro.voice = preferredVoice;
+      intro.rate = 0.90;
+      intro.pitch = 0.78;
       intro.volume = 1;
       intro.onend = () => startPlayback().catch(error=>setRotationStatus(error.message));
       intro.onerror = () => startPlayback().catch(error=>setRotationStatus(error.message));
