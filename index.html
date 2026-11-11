@@ -51,20 +51,15 @@ input[type=range]{width:100%;accent-color:var(--gold)}.fine{font-size:.78rem;col
     <p class="fine" id="deviceStatus">Waiting for Spotify player…</p>
 
     <div class="panel" style="margin:18px 0 0;padding:16px">
-      <div class="eyebrow">WELM RANDOM ROTATION</div>
-      <h2 style="margin:7px 0 4px">Pick the next record</h2>
-      <p class="status">A fresh, random selection from 1980–1993. Every selection is started by you.</p>
+      <div class="eyebrow">WELM PERSONAL RADIO</div>
+      <h2 style="margin:7px 0 4px">Your records. Your station.</h2>
+      <p class="status">Random picks from your Spotify Liked Songs, with a little company from the WELM DJ.</p>
       <div class="station-controls">
-        <select id="formatSelect" aria-label="Choose music format">
-          <option value="mix">The WELM Mix — Rock, Pop & Country</option>
-          <option value="rock">Rock & Arena Rock</option>
-          <option value="pop">Pop & New Wave</option>
-          <option value="country">Country Gold</option>
-        </select>
-        <button id="surpriseBtn">SURPRISE ME</button>
-        <button class="secondary" id="nextRandomBtn">NEXT RECORD</button>
+        <button id="surpriseBtn">TUNE IN</button>
+        <button class="secondary" id="nextRandomBtn">NEXT SONG</button>
       </div>
-      <p class="fine" id="rotationStatus" aria-live="polite">Choose a format and let WELM find a record.</p>
+      <p class="fine" id="rotationStatus" aria-live="polite">The DJ is standing by. Pick a record when you're ready.</p>
+      <p class="fine" id="libraryStatus"></p>
     </div>
 
     <div style="margin-top:15px"><label class="fine" for="volume">VOLUME</label><input id="volume" type="range" min="0" max="100" value="65"></div>
@@ -77,7 +72,7 @@ input[type=range]{width:100%;accent-color:var(--gold)}.fine{font-size:.78rem;col
   // Set the final HTTPS callback URL in Spotify Dashboard AND here after hosting.
   const CLIENT_ID = "cdd12288c6e24658b2a31f887b26c780";
   const REDIRECT_URI = window.location.origin + window.location.pathname;
-  const SCOPES = ["streaming","user-read-email","user-read-private","user-read-playback-state","user-modify-playback-state"];
+  const SCOPES = ["streaming","user-read-email","user-read-private","user-read-playback-state","user-modify-playback-state","user-library-read"];
   const $ = id => document.getElementById(id);
   let token = localStorage.getItem("welm_spotify_access_token");
   let player = null, deviceId = null, ready = false;
@@ -166,65 +161,76 @@ input[type=range]{width:100%;accent-color:var(--gold)}.fine{font-size:.78rem;col
     return r;
   }
 
-  const formats = {
-    rock: ["genre:rock year:1980-1993","genre:classic rock year:1980-1993","genre:hard rock year:1980-1993"],
-    pop: ["genre:pop year:1980-1993","genre:new wave year:1980-1993","genre:dance pop year:1980-1993"],
-    country: ["genre:country year:1980-1993","genre:traditional country year:1980-1993","genre:contemporary country year:1980-1993"]
-  };
+  let savedTracksCache = null;
+  let djBusy = false;
 
   function setRotationStatus(message){ $("rotationStatus").textContent = message; }
 
   function rememberTrack(track){
     recentTracks.unshift(track.id);
     recentArtists.unshift(track.artists?.[0]?.id || track.artists?.[0]?.name || "");
-    recentTracks.splice(15);
-    recentArtists.splice(5);
+    recentTracks.splice(30);
+    recentArtists.splice(10);
     sessionStorage.setItem("welm_recent_tracks",JSON.stringify(recentTracks));
     sessionStorage.setItem("welm_recent_artists",JSON.stringify(recentArtists));
   }
 
-  async function findRandomTrack(format){
-    const category = format === "mix"
-      ? (["rock","rock","pop","pop","country"][Math.floor(Math.random()*5)])
-      : format;
-    const queries = formats[category];
-    const query = queries[Math.floor(Math.random()*queries.length)];
-    const url = "https://api.spotify.com/v1/search?"+new URLSearchParams({
-      q: query, type:"track", limit:"10", market:"US"
-    });
-    const response = await fetch(url,{headers:{Authorization:"Bearer "+token}});
-    if(!response.ok){
-      const detail = await response.text();
-      throw new Error("Spotify search ("+response.status+"): "+detail.slice(0,160));
+  async function getSavedTracks(){
+    if(savedTracksCache) return savedTracksCache;
+    const all = [];
+    let offset = 0;
+    const pageSize = 50;
+    $("libraryStatus").textContent = "The DJ is checking your Spotify record collection…";
+    while(true){
+      const response = await fetch(
+        "https://api.spotify.com/v1/me/tracks?limit="+pageSize+"&offset="+offset+"&market=US",
+        {headers:{Authorization:"Bearer "+token}}
+      );
+      if(!response.ok){
+        const detail = await response.text();
+        if(response.status === 403) {
+          throw new Error("Spotify needs permission to read your Liked Songs. Disconnect and reconnect WELM, then approve the new library permission.");
+        }
+        throw new Error("Couldn't read your Spotify Liked Songs ("+response.status+"): "+detail.slice(0,150));
+      }
+      const data = await response.json();
+      for(const item of (data.items || [])){
+        const track = item.track;
+        if(track && track.uri && track.id && track.is_playable !== false) all.push(track);
+      }
+      $("libraryStatus").textContent = "Found "+all.length+" playable saved songs…";
+      if(!data.next || !data.items?.length) break;
+      offset += data.items.length;
     }
-    const data = await response.json();
-    const tracks = (data.tracks?.items || []).filter(track=>{
-      const year = Number((track.album?.release_date || "").slice(0,4));
-      return track.uri && track.is_playable !== false && year >= 1980 && year <= 1993;
-    });
-    if(!tracks.length) throw new Error("Spotify didn't return a playable match for that format. Try again.");
+    if(!all.length) throw new Error("Your Spotify Liked Songs list looks empty, or Spotify returned no playable tracks.");
+    savedTracksCache = all;
+    $("libraryStatus").textContent = "WELM has access to "+all.length+" playable songs in your Liked Songs.";
+    return all;
+  }
+
+  function chooseRandomSavedTrack(tracks){
     const fresh = tracks.filter(track=>
       !recentTracks.includes(track.id) &&
       !recentArtists.includes(track.artists?.[0]?.id || track.artists?.[0]?.name || "")
     );
-    const pool = fresh.length ? fresh : tracks.filter(track=>!recentTracks.includes(track.id));
-    return {track:(pool.length ? pool : tracks)[Math.floor(Math.random()*(pool.length ? pool.length : tracks.length))],category};
+    const notRecent = fresh.length ? fresh : tracks.filter(track=>!recentTracks.includes(track.id));
+    const pool = notRecent.length ? notRecent : tracks;
+    return pool[Math.floor(Math.random()*pool.length)];
   }
 
-  async function playRandomRecord(){
-    if(rotationBusy)return;
-    if(!token){setRotationStatus("Connect Spotify first.");return;}
-    if(!player || !deviceId || !ready){
-      setRotationStatus("WELM is still connecting. Wait for the player to be ready, then activate it.");
-      return;
-    }
-    rotationBusy = true;
-    $("surpriseBtn").disabled = $("nextRandomBtn").disabled = true;
-    setRotationStatus("The WELM music director is checking the record library…");
-    try{
-      await player.activateElement();
-      const selected = await findRandomTrack($("formatSelect").value);
-      const track = selected.track;
+  function djIntroduction(track){
+    const artist = track.artists.map(a=>a.name).join(", ");
+    const intros = [
+      "You're listening to W E L M, ninety-five point five. Shawn picked this one for the collection, and we're bringing it back around. Here's "+track.name+" by "+artist+".",
+      "All right, let's spin another one from your own record collection. This is "+artist+" with "+track.name+". You're right where you belong, on W E L M ninety-five point five.",
+      "A little something from the songs you've saved and loved. Turn it up just a touch. Here's "+track.name+" from "+artist+". W E L M ninety-five point five.",
+      "And now, another favorite from your library. "+artist+". "+track.name+". Thanks for spending a little time with us here at W E L M."
+    ];
+    return intros[Math.floor(Math.random()*intros.length)];
+  }
+
+  function speakThenPlay(track){
+    const startPlayback = async () => {
       const response = await fetch("https://api.spotify.com/v1/me/player/play?device_id="+encodeURIComponent(deviceId),{
         method:"PUT",
         headers:{Authorization:"Bearer "+token,"Content-Type":"application/json"},
@@ -232,17 +238,48 @@ input[type=range]{width:100%;accent-color:var(--gold)}.fine{font-size:.78rem;col
       });
       if(!response.ok){
         const detail = await response.text();
-        throw new Error("Spotify couldn't start that record ("+response.status+"): "+detail.slice(0,180));
+        throw new Error("Spotify couldn't start that song ("+response.status+"): "+detail.slice(0,160));
       }
       rememberTrack(track);
       const artist = track.artists.map(a=>a.name).join(", ");
-      const year = (track.album.release_date || "").slice(0,4);
-      setRotationStatus("Now spinning: "+track.name+" — "+artist+" ("+year+").");
-      setStatus("WELM is playing your "+selected.category+" selection.");
+      setRotationStatus("Now spinning: "+track.name+" — "+artist+".");
+      setStatus("WELM is playing a song from your Liked Songs.");
+    };
+
+    if("speechSynthesis" in window && "SpeechSynthesisUtterance" in window){
+      window.speechSynthesis.cancel();
+      const intro = new SpeechSynthesisUtterance(djIntroduction(track));
+      intro.rate = 0.94;
+      intro.pitch = 0.88;
+      intro.volume = 1;
+      intro.onend = () => startPlayback().catch(error=>setRotationStatus(error.message));
+      intro.onerror = () => startPlayback().catch(error=>setRotationStatus(error.message));
+      window.speechSynthesis.speak(intro);
+    } else {
+      setRotationStatus("This browser can't speak the DJ intro, so we're going straight to the record.");
+      startPlayback().catch(error=>setRotationStatus(error.message));
+    }
+  }
+
+  async function playRandomRecord(){
+    if(djBusy) return;
+    if(!token){setRotationStatus("Connect Spotify first.");return;}
+    if(!player || !deviceId || !ready){
+      setRotationStatus("WELM is still connecting. Wait for the player to be ready, then activate it.");
+      return;
+    }
+    djBusy = true;
+    $("surpriseBtn").disabled = $("nextRandomBtn").disabled = true;
+    try{
+      await player.activateElement();
+      const tracks = await getSavedTracks();
+      const track = chooseRandomSavedTrack(tracks);
+      setRotationStatus("The WELM DJ is cueing up your next record…");
+      speakThenPlay(track);
     }catch(error){
-      setRotationStatus(error.message || "Something went wrong finding the next record.");
+      setRotationStatus(error.message || "Something went wrong finding your next record.");
     }finally{
-      rotationBusy = false;
+      djBusy = false;
       $("surpriseBtn").disabled = $("nextRandomBtn").disabled = false;
     }
   }
@@ -255,7 +292,7 @@ input[type=range]{width:100%;accent-color:var(--gold)}.fine{font-size:.78rem;col
   $("surpriseBtn").addEventListener("click",playRandomRecord);
   $("nextRandomBtn").addEventListener("click",playRandomRecord);
   $("volume").addEventListener("input",e=>player?.setVolume(Number(e.target.value)/100));
-  $("logoutBtn").addEventListener("click",()=>{player?.disconnect();localStorage.removeItem("welm_spotify_access_token");localStorage.removeItem("welm_spotify_refresh_token");token=null;showPlayer(false);setStatus("Disconnected from Spotify.");});
+  $("logoutBtn").addEventListener("click",()=>{player?.disconnect();localStorage.removeItem("welm_spotify_access_token");localStorage.removeItem("welm_spotify_refresh_token");token=null;savedTracksCache=null;window.speechSynthesis?.cancel();showPlayer(false);setStatus("Disconnected from Spotify.");});
   (async()=>{
     await handleCallback();
     if(token){showPlayer(true);loadSdk();}
